@@ -1,3 +1,4 @@
+
 import os
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
@@ -5,6 +6,7 @@ from fuzzywuzzy import fuzz
 import logging
 import sqlite3
 from datetime import datetime
+from collections import defaultdict
 
 # Configuración de logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -62,7 +64,7 @@ def search_messages(search_term):
                 'message_id': msg[5]
             })
     
-    return results[:5]  # Limita a los 5 mejores resultados
+    return results  # Retorna todos los resultados sin límite
 
 def create_keyboard(buttons):
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -90,20 +92,32 @@ def handle_search(message):
     results = search_messages(search_term)
     
     if results:
+        # Agrupar resultados por título
+        title_groups = defaultdict(list)
         for result in results:
-            content_type = result['type']
-            response_text = f"Película o serie \"{search_term}\" encontrada\nAquí está:"
-            bot.send_message(message.chat.id, response_text)
-            
-            if content_type == 'text':
-                bot.send_message(message.chat.id, result['content'])
-            elif content_type in ['photo', 'video', 'document']:
-                if content_type == 'photo':
-                    bot.send_photo(message.chat.id, result['file_id'], caption=result['caption'])
-                elif content_type == 'video':
-                    bot.send_video(message.chat.id, result['file_id'], caption=result['caption'])
-                elif content_type == 'document':
-                    bot.send_document(message.chat.id, result['file_id'], caption=result['caption'])
+            title = result.get('caption', '') or result.get('content', '')[:50]  # Usar los primeros 50 caracteres como título
+            title_groups[title].append(result)
+        
+        for title, group in title_groups.items():
+            if len(group) > 3:
+                # Más de 3 mensajes con el mismo título, enviar como link (serie)
+                link = f"https://t.me/c/{str(GROUP_CHAT_ID)[4:]}/{group[0]['message_id']}"
+                bot.send_message(message.chat.id, f"Serie encontrada: {title}\nLink: {link}")
+            else:
+                # 3 o menos mensajes, enviar como multimedia (película)
+                bot.send_message(message.chat.id, f"Película encontrada: {title}")
+                for result in group:
+                    content_type = result['type']
+                    if content_type == 'text':
+                        bot.send_message(message.chat.id, result['content'])
+                    elif content_type in ['photo', 'video', 'document']:
+                        if result['file_id']:
+                            if content_type == 'photo':
+                                bot.send_photo(message.chat.id, result['file_id'], caption=result['caption'])
+                            elif content_type == 'video':
+                                bot.send_video(message.chat.id, result['file_id'], caption=result['caption'])
+                            elif content_type == 'document':
+                                bot.send_document(message.chat.id, result['file_id'], caption=result['caption'])
     else:
         bot.send_message(message.chat.id, f"Lo siento, esa película o serie al parecer no está en cinepelis.")
     
