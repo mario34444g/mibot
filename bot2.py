@@ -1,12 +1,9 @@
-
-import os
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from fuzzywuzzy import fuzz
 import logging
 import sqlite3
 from datetime import datetime
-from collections import defaultdict
 
 # Configuración de logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -64,7 +61,7 @@ def search_messages(search_term):
                 'message_id': msg[5]
             })
     
-    return results  # Retorna todos los resultados sin límite
+    return results
 
 def create_keyboard(buttons):
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -74,68 +71,61 @@ def create_keyboard(buttons):
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     welcome_message = "Hola, bienvenido. Soy tu asistente de cinepelis."
-    keyboard = create_keyboard(["Buscar"])
+    keyboard = create_keyboard(["Buscar Películas", "Buscar Series"])
     bot.send_message(message.chat.id, welcome_message, reply_markup=keyboard)
-    USER_STATES[message.chat.id] = 'WAITING_FOR_SEARCH'
+    USER_STATES[message.chat.id] = 'WAITING_FOR_SEARCH_TYPE'
 
-@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_SEARCH')
-def handle_search_request(message):
-    if message.text == "Buscar":
-        bot.send_message(message.chat.id, "Por favor, escribe el nombre de la película o serie que deseas buscar.")
-        USER_STATES[message.chat.id] = 'SEARCHING'
+@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_SEARCH_TYPE')
+def handle_search_type(message):
+    if message.text in ["Buscar Películas", "Buscar Series"]:
+        bot.send_message(message.chat.id, f"Por favor, escribe el nombre de la {message.text.split()[1][:-1]} que deseas buscar.")
+        USER_STATES[message.chat.id] = 'SEARCHING_' + message.text.split()[1].upper()
     else:
-        bot.send_message(message.chat.id, "Por favor, presiona el botón 'Buscar' para iniciar tu búsqueda.")
+        keyboard = create_keyboard(["Buscar Películas", "Buscar Series"])
+        bot.send_message(message.chat.id, "Por favor, selecciona una opción válida.", reply_markup=keyboard)
 
-@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'SEARCHING')
+@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) in ['SEARCHING_PELÍCULAS', 'SEARCHING_SERIES'])
 def handle_search(message):
     search_term = message.text.lower()
     results = search_messages(search_term)
     
     if results:
-        # Agrupar resultados por título
-        title_groups = defaultdict(list)
-        for result in results:
-            title = result.get('caption', '') or result.get('content', '')[:50]  # Usar los primeros 50 caracteres como título
-            title_groups[title].append(result)
-        
-        for title, group in title_groups.items():
-            if len(group) > 3:
-                # Más de 3 mensajes con el mismo título, enviar como link (serie)
-                link = f"https://t.me/c/{str(GROUP_CHAT_ID)[4:]}/{group[0]['message_id']}"
-                bot.send_message(message.chat.id, f"Serie encontrada: {title}\nLink: {link}")
-            else:
-                # 3 o menos mensajes, enviar como multimedia (película)
-                bot.send_message(message.chat.id, f"Película encontrada: {title}")
-                for result in group:
-                    content_type = result['type']
-                    if content_type == 'text':
-                        bot.send_message(message.chat.id, result['content'])
-                    elif content_type in ['photo', 'video', 'document']:
-                        if result['file_id']:
-                            if content_type == 'photo':
-                                bot.send_photo(message.chat.id, result['file_id'], caption=result['caption'])
-                            elif content_type == 'video':
-                                bot.send_video(message.chat.id, result['file_id'], caption=result['caption'])
-                            elif content_type == 'document':
-                                bot.send_document(message.chat.id, result['file_id'], caption=result['caption'])
+        if USER_STATES[message.chat.id] == 'SEARCHING_PELÍCULAS':
+            bot.send_message(message.chat.id, f"Mira, aquí está tu película '{search_term}':")
+            for result in results:
+                content_type = result['type']
+                if content_type == 'text':
+                    bot.send_message(message.chat.id, result['content'])
+                elif content_type in ['photo', 'video', 'document']:
+                    if result['file_id']:
+                        if content_type == 'photo':
+                            bot.send_photo(message.chat.id, result['file_id'], caption=result['caption'])
+                        elif content_type == 'video':
+                            bot.send_video(message.chat.id, result['file_id'], caption=result['caption'])
+                        elif content_type == 'document':
+                            bot.send_document(message.chat.id, result['file_id'], caption=result['caption'])
+        else:  # SEARCHING_SERIES
+            first_result = results[0]
+            link = f"https://t.me/c/{str(GROUP_CHAT_ID)[4:]}/{first_result['message_id']}"
+            bot.send_message(message.chat.id, f"Mira, aquí está tu serie '{search_term}':\nLink: {link}")
     else:
-        bot.send_message(message.chat.id, f"Lo siento, esa película o serie al parecer no está en cinepelis.")
+        bot.send_message(message.chat.id, "AUN NO ESTA DISPONIBLE CORAZONCITO 💖 PERO UNETE A @PELICULASYMASG Y ESTÁ PENDIENTE A CUANDO ESTÉ DISPONIBLE 😘")
     
-    keyboard = create_keyboard(["Sí", "No"])
-    bot.send_message(message.chat.id, "¿Quieres buscar otra cosa?", reply_markup=keyboard)
+    keyboard = create_keyboard(["Buscar Películas", "Buscar Series", "Salir"])
+    bot.send_message(message.chat.id, "¿Qué quieres hacer ahora?", reply_markup=keyboard)
     USER_STATES[message.chat.id] = 'ASKING_FOR_MORE'
 
 @bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'ASKING_FOR_MORE')
 def handle_more_search(message):
-    if message.text.lower() == "sí":
-        bot.send_message(message.chat.id, "Por favor, escribe el nombre de la película o serie que deseas buscar.")
-        USER_STATES[message.chat.id] = 'SEARCHING'
-    elif message.text.lower() == "no":
-        bot.send_message(message.chat.id, "Adiós, espero verte de nuevo.")
+    if message.text in ["Buscar Películas", "Buscar Series"]:
+        bot.send_message(message.chat.id, f"Por favor, escribe el nombre de la {message.text.split()[1][:-1]} que deseas buscar.")
+        USER_STATES[message.chat.id] = 'SEARCHING_' + message.text.split()[1].upper()
+    elif message.text == "Salir":
+        bot.send_message(message.chat.id, "Adiós, espero verte de nuevo. Presiona /start para empezar de nuevo.")
         USER_STATES[message.chat.id] = 'FINISHED'
     else:
-        keyboard = create_keyboard(["Sí", "No"])
-        bot.send_message(message.chat.id, "Por favor, selecciona 'Sí' o 'No'.", reply_markup=keyboard)
+        keyboard = create_keyboard(["Buscar Películas", "Buscar Series", "Salir"])
+        bot.send_message(message.chat.id, "Por favor, selecciona una opción válida.", reply_markup=keyboard)
 
 @bot.message_handler(content_types=['text', 'photo', 'video', 'document'])
 def handle_group_messages(message):
@@ -157,3 +147,4 @@ def handle_group_messages(message):
 if __name__ == "__main__":
     init_db()
     bot.polling()
+
