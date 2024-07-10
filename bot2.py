@@ -3,6 +3,8 @@ import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from fuzzywuzzy import fuzz
 import logging
+import sqlite3
+from datetime import datetime
 
 # Configuración de logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -11,10 +13,56 @@ logger = logging.getLogger(__name__)
 API_KEY = '7458928597:AAGAyVvFXJ7QSWuY0-hpBA7xgOqYBtbxxW8'
 GROUP_CHAT_ID = -1002199010991
 bot = telebot.TeleBot(API_KEY)
-group_messages = []
 
 # Estados del usuario
 USER_STATES = {}
+
+# Configuración de la base de datos
+DB_NAME = 'cinepelis_messages.db'
+
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS messages
+                 (id INTEGER PRIMARY KEY,
+                  type TEXT,
+                  content TEXT,
+                  caption TEXT,
+                  file_id TEXT,
+                  message_id INTEGER,
+                  timestamp DATETIME)''')
+    conn.commit()
+    conn.close()
+
+def add_message_to_db(message_type, content, caption, file_id, message_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("INSERT INTO messages (type, content, caption, file_id, message_id, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+              (message_type, content, caption, file_id, message_id, datetime.now()))
+    conn.commit()
+    conn.close()
+
+def search_messages(search_term):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT * FROM messages")
+    all_messages = c.fetchall()
+    conn.close()
+
+    results = []
+    for msg in all_messages:
+        content = msg[2] or msg[3] or ''  # content or caption
+        ratio = fuzz.partial_ratio(search_term.lower(), content.lower())
+        if ratio > 80:  # Ajusta este umbral según sea necesario
+            results.append({
+                'type': msg[1],
+                'content': msg[2],
+                'caption': msg[3],
+                'file_id': msg[4],
+                'message_id': msg[5]
+            })
+    
+    return results[:5]  # Limita a los 5 mejores resultados
 
 def create_keyboard(buttons):
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -39,15 +87,10 @@ def handle_search_request(message):
 @bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'SEARCHING')
 def handle_search(message):
     search_term = message.text.lower()
-    results = []
-    for msg in group_messages:
-        content = msg.get('content', '') or msg.get('caption', '')
-        ratio = fuzz.partial_ratio(search_term, content.lower())
-        if ratio > 80:
-            results.append(msg)
+    results = search_messages(search_term)
     
     if results:
-        for result in results[:5]:
+        for result in results:
             content_type = result['type']
             response_text = f"Película o serie \"{search_term}\" encontrada\nAquí está:"
             bot.send_message(message.chat.id, response_text)
@@ -84,7 +127,7 @@ def handle_more_search(message):
 def handle_group_messages(message):
     if message.chat.id == GROUP_CHAT_ID:
         if message.content_type == 'text':
-            group_messages.append({'type': 'text', 'content': message.text, 'message_id': message.message_id})
+            add_message_to_db('text', message.text, None, None, message.message_id)
         elif message.content_type in ['photo', 'video', 'document']:
             caption = message.caption if message.caption else "Sin título"
             file_id = None
@@ -95,12 +138,8 @@ def handle_group_messages(message):
             elif message.content_type == 'document':
                 file_id = message.document.file_id
             
-            group_messages.append({
-                'type': message.content_type,
-                'caption': caption,
-                'file_id': file_id,
-                'message_id': message.message_id
-            })
+            add_message_to_db(message.content_type, None, caption, file_id, message.message_id)
 
 if __name__ == "__main__":
+    init_db()
     bot.polling()
