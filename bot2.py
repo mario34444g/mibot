@@ -1,177 +1,97 @@
-import os
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton
-from fuzzywuzzy import fuzz
-import logging
-import sqlite3
-from datetime import datetime
-import requests  # Importar la librería requests
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
-# Configuración de logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
-
+# Configuración del bot
 API_KEY = '7458928597:AAGAyVvFXJ7QSWuY0-hpBA7xgOqYBtbxxW8'
 GROUP_CHAT_ID = -1002199010991
+ADMIN_GROUP_ID = -4284232130
 bot = telebot.TeleBot(API_KEY)
 
 # Estados del usuario
 USER_STATES = {}
-
-# Configuración de la base de datos
-DB_NAME = 'cinepelis_messages.db'
-
-def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS messages
-                 (id INTEGER PRIMARY KEY,
-                  type TEXT,
-                  content TEXT,
-                  caption TEXT,
-                  file_id TEXT,
-                  message_id INTEGER,
-                  timestamp DATETIME)''')
-    conn.commit()
-    conn.close()
-
-def add_message_to_db(message_type, content, caption, file_id, message_id):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("INSERT INTO messages (type, content, caption, file_id, message_id, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-              (message_type, content, caption, file_id, message_id, datetime.now()))
-    conn.commit()
-    conn.close()
-
-def search_messages(search_term):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT * FROM messages")
-    all_messages = c.fetchall()
-    conn.close()
-
-    results = []
-    for msg in all_messages:
-        content = msg[2] or msg[3] or ''  # content or caption
-        ratio = fuzz.partial_ratio(search_term.lower(), content.lower())
-        if ratio > 80:  # Ajusta este umbral según sea necesario
-            results.append({
-                'type': msg[1],
-                'content': msg[2],
-                'caption': msg[3],
-                'file_id': msg[4],
-                'message_id': msg[5]
-            })
-    
-    return results
 
 def create_keyboard(buttons):
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     keyboard.add(*[KeyboardButton(button) for button in buttons])
     return keyboard
 
+@bot.message_handler(func=lambda message: message.chat.type == 'supergroup')
+def handle_group_message(message):
+    username = message.from_user.first_name
+    chat_button = InlineKeyboardButton("Hablar con Lucy", url=f"https://t.me/{bot.get_me().username}")
+    markup = InlineKeyboardMarkup().add(chat_button)
+    bot.reply_to(message, f"Hola {username}, soy Lucy. Para hacer tu petición, queja o sugerencia, escríbeme al privado.", reply_markup=markup)
+
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    welcome_message = "Hola, bienvenido. Soy tu asistente de cinepelis."
-    keyboard = create_keyboard(["Buscar Películas", "Buscar Series"])
+    username = message.from_user.first_name
+    welcome_message = f"Hola {username}, ¿qué quieres hacer?"
+    keyboard = create_keyboard(["Queja", "Petición", "Sugerencia"])
     bot.send_message(message.chat.id, welcome_message, reply_markup=keyboard)
-    USER_STATES[message.chat.id] = 'WAITING_FOR_SEARCH_TYPE'
+    USER_STATES[message.chat.id] = 'WAITING_FOR_OPTION'
 
-@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_SEARCH_TYPE')
-def handle_search_type(message):
-    if message.text in ["Buscar Películas", "Buscar Series"]:
-        bot.send_message(message.chat.id, f"Por favor, escribe el nombre de la {message.text.split()[1][:-1]} que deseas buscar.")
-        USER_STATES[message.chat.id] = 'SEARCHING_' + message.text.split()[1].upper()
+@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_OPTION')
+def handle_option(message):
+    if message.text == "Queja":
+        bot.send_message(message.chat.id, "Por favor, deja tu queja:")
+        USER_STATES[message.chat.id] = 'WAITING_FOR_COMPLAINT'
+    elif message.text == "Petición":
+        bot.send_message(message.chat.id, "Asegúrate de que lo que pides no está en el grupo. Recuerda usar la barra superior derecha para buscar. ¿Qué quieres pedir?")
+        USER_STATES[message.chat.id] = 'WAITING_FOR_REQUEST'
+    elif message.text == "Sugerencia":
+        bot.send_message(message.chat.id, "Por favor, deja tu sugerencia:")
+        USER_STATES[message.chat.id] = 'WAITING_FOR_SUGGESTION'
     else:
-        keyboard = create_keyboard(["Buscar Películas", "Buscar Series"])
+        keyboard = create_keyboard(["Queja", "Petición", "Sugerencia"])
         bot.send_message(message.chat.id, "Por favor, selecciona una opción válida.", reply_markup=keyboard)
 
-@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) in ['SEARCHING_PELÍCULAS', 'SEARCHING_SERIES'])
-def handle_search(message):
-    search_term = message.text.lower()
-    results = search_messages(search_term)
-    
-    if results:
-        if USER_STATES[message.chat.id] == 'SEARCHING_PELÍCULAS':
-            bot.send_message(message.chat.id, f"Película(s) encontrada(s) para '{search_term}':")
-            for result in results:
-                content_type = result['type']
-                if content_type == 'text':
-                    bot.send_message(message.chat.id, result['content'])
-                elif content_type in ['photo', 'video', 'document']:
-                    if result['file_id']:
-                        if content_type == 'photo':
-                            bot.send_photo(message.chat.id, result['file_id'], caption=result['caption'])
-                        elif content_type == 'video':
-                            bot.send_video(message.chat.id, result['file_id'], caption=result['caption'])
-                        elif content_type == 'document':
-                            bot.send_document(message.chat.id, result['file_id'], caption=result['caption'])
-        else:  # SEARCHING_SERIES
-            first_result = results[0]
-            link = f"https://t.me/c/{str(GROUP_CHAT_ID)[4:]}/{first_result['message_id']}"
-            bot.send_message(message.chat.id, f"Serie encontrada: {search_term}\nLink: {link}")
+@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_COMPLAINT')
+def handle_complaint(message):
+    bot.forward_message(ADMIN_GROUP_ID, message.chat.id, message.message_id)
+    bot.send_message(ADMIN_GROUP_ID, f"Nueva queja de {message.from_user.first_name} (@{message.from_user.username}):")
+    bot.send_message(message.chat.id, "Gracias por tu queja. ¿Quieres hablar con un administrador?", reply_markup=create_keyboard(["Sí", "No"]))
+    USER_STATES[message.chat.id] = 'WAITING_FOR_ADMIN_DECISION'
+
+@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_ADMIN_DECISION')
+def handle_admin_decision(message):
+    if message.text == "Sí":
+        bot.send_message(ADMIN_GROUP_ID, f"@admin El usuario {message.from_user.first_name} (@{message.from_user.username}) quiere hablar con un administrador.")
+        bot.send_message(message.chat.id, "Un administrador se pondrá en contacto contigo pronto.")
+    elif message.text == "No":
+        bot.send_message(message.chat.id, "Entendido. Gracias por tu queja.")
     else:
-        bot.send_message(message.chat.id, f"Lo siento, esa película o serie al parecer no está en cinepelis.")
-    
-    keyboard = create_keyboard(["Buscar Películas", "Buscar Series", "Salir"])
-    bot.send_message(message.chat.id, "¿Qué quieres hacer ahora?", reply_markup=keyboard)
-    USER_STATES[message.chat.id] = 'ASKING_FOR_MORE'
+        bot.send_message(message.chat.id, "Por favor, selecciona 'Sí' o 'No'.", reply_markup=create_keyboard(["Sí", "No"]))
+        return
+    ask_for_more(message.chat.id)
+
+@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_REQUEST')
+def handle_request(message):
+    bot.forward_message(ADMIN_GROUP_ID, message.chat.id, message.message_id)
+    bot.send_message(ADMIN_GROUP_ID, f"Nueva petición de {message.from_user.first_name} (@{message.from_user.username}):")
+    bot.send_message(message.chat.id, "Petición tomada. Pronto estará disponible.")
+    ask_for_more(message.chat.id)
+
+@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_SUGGESTION')
+def handle_suggestion(message):
+    bot.forward_message(ADMIN_GROUP_ID, message.chat.id, message.message_id)
+    bot.send_message(ADMIN_GROUP_ID, f"Nueva sugerencia de {message.from_user.first_name} (@{message.from_user.username}):")
+    bot.send_message(message.chat.id, "Gracias por tu sugerencia. La tendremos en cuenta.")
+    ask_for_more(message.chat.id)
+
+def ask_for_more(chat_id):
+    keyboard = create_keyboard(["Queja", "Petición", "Sugerencia", "Salir"])
+    bot.send_message(chat_id, "¿Quieres hacer algo más?", reply_markup=keyboard)
+    USER_STATES[chat_id] = 'ASKING_FOR_MORE'
 
 @bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'ASKING_FOR_MORE')
-def handle_more_search(message):
-    if message.text in ["Buscar Películas", "Buscar Series"]:
-        bot.send_message(message.chat.id, f"Por favor, escribe el nombre de la {message.text.split()[1][:-1]} que deseas buscar.")
-        USER_STATES[message.chat.id] = 'SEARCHING_' + message.text.split()[1].upper()
-    elif message.text == "Salir":
-        bot.send_message(message.chat.id, "Adiós, espero verte de nuevo.")
+def handle_more(message):
+    if message.text == "Salir":
+        bot.send_message(message.chat.id, "Gracias por usar nuestro servicio. ¡Hasta pronto!")
         USER_STATES[message.chat.id] = 'FINISHED'
     else:
-        keyboard = create_keyboard(["Buscar Películas", "Buscar Series", "Salir"])
-        bot.send_message(message.chat.id, "Por favor, selecciona una opción válida.", reply_markup=keyboard)
-
-@bot.message_handler(content_types=['text', 'photo', 'video', 'document'])
-def handle_group_messages(message):
-    if message.chat.id == GROUP_CHAT_ID:
-        if message.content_type == 'text':
-            add_message_to_db('text', message.text, None, None, message.message_id)
-        elif message.content_type in ['photo', 'video', 'document']:
-            caption = message.caption if message.caption else "Sin título"
-            file_id = None
-            if message.content_type == 'photo':
-                file_id = message.photo[-1].file_id
-            elif message.content_type == 'video':
-                file_id = message.video.file_id
-            elif message.content_type == 'document':
-                file_id = message.document.file_id
-            
-            add_message_to_db(message.content_type, None, caption, file_id, message.message_id)
-
-def fetch_group_history():
-    """Fetch the message history from the group and store it in the database."""
-    logger.info("Fetching message history...")
-    offset = None
-
-    while True:
-        try:
-            updates = bot.get_updates(offset=offset, timeout=60)  # Aumenta el tiempo de espera a 60 segundos
-            if not updates:
-                break
-
-            for update in updates:
-                if update.message and update.message.chat.id == GROUP_CHAT_ID:
-                    handle_group_messages(update.message)
-                offset = update.update_id + 1
-
-        except requests.exceptions.ReadTimeout:
-            logger.warning("Read timeout occurred. Retrying...")
-            continue
-        except Exception as e:
-            logger.error(f"An error occurred: {e}")
-            break
+        handle_option(message)
 
 if __name__ == "__main__":
-    init_db()
-    fetch_group_history()
     bot.polling()
 
 
