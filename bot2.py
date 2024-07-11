@@ -1,9 +1,11 @@
+import os
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from fuzzywuzzy import fuzz
 import logging
 import sqlite3
 from datetime import datetime
+import requests  # Importar la librería requests
 
 # Configuración de logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -91,7 +93,7 @@ def handle_search(message):
     
     if results:
         if USER_STATES[message.chat.id] == 'SEARCHING_PELÍCULAS':
-            bot.send_message(message.chat.id, f"Mira, aquí está tu película '{search_term}':")
+            bot.send_message(message.chat.id, f"Película(s) encontrada(s) para '{search_term}':")
             for result in results:
                 content_type = result['type']
                 if content_type == 'text':
@@ -107,9 +109,9 @@ def handle_search(message):
         else:  # SEARCHING_SERIES
             first_result = results[0]
             link = f"https://t.me/c/{str(GROUP_CHAT_ID)[4:]}/{first_result['message_id']}"
-            bot.send_message(message.chat.id, f"Mira, aquí está tu serie '{search_term}':\nLink: {link}")
+            bot.send_message(message.chat.id, f"Serie encontrada: {search_term}\nLink: {link}")
     else:
-        bot.send_message(message.chat.id, "AUN NO ESTA DISPONIBLE CORAZONCITO 💖 PERO UNETE A @PELICULASYMASG Y ESTÁ PENDIENTE A CUANDO ESTÉ DISPONIBLE 😘")
+        bot.send_message(message.chat.id, f"Lo siento, esa película o serie al parecer no está en cinepelis.")
     
     keyboard = create_keyboard(["Buscar Películas", "Buscar Series", "Salir"])
     bot.send_message(message.chat.id, "¿Qué quieres hacer ahora?", reply_markup=keyboard)
@@ -121,7 +123,7 @@ def handle_more_search(message):
         bot.send_message(message.chat.id, f"Por favor, escribe el nombre de la {message.text.split()[1][:-1]} que deseas buscar.")
         USER_STATES[message.chat.id] = 'SEARCHING_' + message.text.split()[1].upper()
     elif message.text == "Salir":
-        bot.send_message(message.chat.id, "Adiós, espero verte de nuevo. Presiona /start para empezar de nuevo.")
+        bot.send_message(message.chat.id, "Adiós, espero verte de nuevo.")
         USER_STATES[message.chat.id] = 'FINISHED'
     else:
         keyboard = create_keyboard(["Buscar Películas", "Buscar Series", "Salir"])
@@ -144,7 +146,32 @@ def handle_group_messages(message):
             
             add_message_to_db(message.content_type, None, caption, file_id, message.message_id)
 
+def fetch_group_history():
+    """Fetch the message history from the group and store it in the database."""
+    logger.info("Fetching message history...")
+    offset = None
+
+    while True:
+        try:
+            updates = bot.get_updates(offset=offset, timeout=60)  # Aumenta el tiempo de espera a 60 segundos
+            if not updates:
+                break
+
+            for update in updates:
+                if update.message and update.message.chat.id == GROUP_CHAT_ID:
+                    handle_group_messages(update.message)
+                offset = update.update_id + 1
+
+        except requests.exceptions.ReadTimeout:
+            logger.warning("Read timeout occurred. Retrying...")
+            continue
+        except Exception as e:
+            logger.error(f"An error occurred: {e}")
+            break
+
 if __name__ == "__main__":
     init_db()
+    fetch_group_history()
     bot.polling()
+
 
