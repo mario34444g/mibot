@@ -5,3 +5,4 @@ requests==2.31.0
 tmdbv3api==1.7.7
 fuzzywuzzy==0.18.0
 python-Levenshtein==0.21.1
+telebot==0.0.5
