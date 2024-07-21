@@ -146,7 +146,7 @@ def send_welcome(message):
     # Agregar botón exclusivo para el administrador
     if message.from_user.id == ADMIN_USER_ID:
         keyboard.add(KeyboardButton("Gestionar Sorteo"))
-         bot.send_message(message.chat.id, welcome_message, reply_markup=keyboard)
+    bot.send_message(message.chat.id, welcome_message, reply_markup=keyboard)
     USER_STATES[message.chat.id] = 'WAITING_FOR_OPTION'
 
 @bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_OPTION')
