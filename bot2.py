@@ -5,6 +5,7 @@ import re
 from imdb import Cinemagoer
 from googletrans import Translator
 import logging
+import random
 
 # Configuración del logging
 logging.basicConfig(level=logging.INFO)
@@ -15,6 +16,7 @@ API_KEY = '7458928597:AAGAyVvFXJ7QSWuY0-hpBA7xgOqYBtbxxW8'
 GROUP_CHAT_ID = -1002199010991
 ADMIN_GROUP_ID = -4284232130
 CHANNEL_ID = -1002176864902
+ADMIN_USER_ID = 1404317898
 bot = telebot.TeleBot(API_KEY)
 
 # Configuración de IMDb y Traductor
@@ -24,9 +26,19 @@ translator = Translator()
 # Estados del usuario
 USER_STATES = {}
 
+
+# Lista para almacenar los participantes del sorteo
+GIVEAWAY_PARTICIPANTS = []
+
 def create_keyboard(buttons):
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     keyboard.add(*[KeyboardButton(button) for button in buttons])
+    return keyboard
+
+def create_inline_keyboard(buttons):
+    keyboard = InlineKeyboardMarkup()
+    for text, url in buttons:
+        keyboard.add(InlineKeyboardButton(text, url=url))
     return keyboard
 
 def search_media(media_name):
@@ -130,8 +142,11 @@ def handle_group_message(message):
 def send_welcome(message):
     username = message.from_user.first_name
     welcome_message = f"Hola {username}, ¿qué quieres hacer?"
-    keyboard = create_keyboard(["Queja", "Petición", "Sugerencia"])
-    bot.send_message(message.chat.id, welcome_message, reply_markup=keyboard)
+    keyboard = create_keyboard(["Queja", "Petición", "Sugerencia", "Participar en Sorteo"])
+    # Agregar botón exclusivo para el administrador
+    if message.from_user.id == ADMIN_USER_ID:
+        keyboard.add(KeyboardButton("Gestionar Sorteo"))
+         bot.send_message(message.chat.id, welcome_message, reply_markup=keyboard)
     USER_STATES[message.chat.id] = 'WAITING_FOR_OPTION'
 
 @bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_OPTION')
@@ -145,10 +160,13 @@ def handle_option(message):
     elif message.text == "Sugerencia":
         bot.send_message(message.chat.id, "Por favor, deja tu sugerencia:")
         USER_STATES[message.chat.id] = 'WAITING_FOR_SUGGESTION'
+    elif message.text == "Participar en Sorteo":
+        check_membership(message)
+    elif message.text == "Gestionar Sorteo" and message.from_user.id == ADMIN_USER_ID:
+        show_admin_options(message)
     else:
-        keyboard = create_keyboard(["Queja", "Petición", "Sugerencia"])
+        keyboard = create_keyboard(["Queja", "Petición", "Sugerencia", "Participar en Sorteo"])
         bot.send_message(message.chat.id, "Por favor, selecciona una opción válida.", reply_markup=keyboard)
-
 @bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_COMPLAINT')
 def handle_complaint(message):
     bot.forward_message(ADMIN_GROUP_ID, message.chat.id, message.message_id)
@@ -183,7 +201,7 @@ def handle_suggestion(message):
     ask_for_more(message.chat.id)
 
 def ask_for_more(chat_id):
-    keyboard = create_keyboard(["Queja", "Petición", "Sugerencia", "Salir"])
+    keyboard = create_keyboard(["Queja", "Petición", "Sugerencia", "Participar en Sorteo", "Salir"])
     bot.send_message(chat_id, "¿Quieres hacer algo más?", reply_markup=keyboard)
     USER_STATES[chat_id] = 'ASKING_FOR_MORE'
 
@@ -195,6 +213,78 @@ def handle_more(message):
     else:
         handle_option(message)
 
+def check_membership(message):
+    user_id = message.from_user.id
+    try:
+        # Verificar membresía en el grupo
+        group_member = bot.get_chat_member(GROUP_CHAT_ID, user_id)
+        # Verificar membresía en el canal
+        channel_member = bot.get_chat_member(CHANNEL_ID, user_id)
+        
+        if group_member.status in ['member', 'administrator', 'creator'] and channel_member.status in ['member', 'administrator', 'creator']:
+            register_for_giveaway(message)
+        else:
+            send_membership_error(message)
+    except telebot.apihelper.ApiException:
+        send_membership_error(message)
+
+def register_for_giveaway(message):
+    user_id = message.from_user.id
+    if user_id not in GIVEAWAY_PARTICIPANTS:
+        GIVEAWAY_PARTICIPANTS.append(user_id)
+        bot.reply_to(message, "¡Bien cariño! Te has registrado para el sorteo. Espera hasta el 25 para conocer si fuiste ganad@r.")
+    else:
+        bot.reply_to(message, "Ya estás registrado para el sorteo. ¡Buena suerte!")
+
+def send_membership_error(message):
+    group_link = "https://t.me/+zO6rvZI5z4A4NmNh"  # Reemplaza con el enlace real del grupo
+    channel_link = "https://t.me/peliculasymasg"  # Reemplaza con el enlace real del canal
+    
+    keyboard = create_inline_keyboard([
+        ("Unirse al Grupo", group_link),
+        ("Unirse al Canal", channel_link)
+    ])
+    
+    bot.reply_to(message, "Error: Debes unirte tanto al grupo como al canal para participar en el sorteo.", reply_markup=keyboard)
+
+def show_admin_options(message):
+    keyboard = create_keyboard(["Detener Registro de Sorteo", "Elegir Ganador"])
+    bot.send_message(message.chat.id, "Opciones de administrador:", reply_markup=keyboard)
+    USER_STATES[message.chat.id] = 'ADMIN_OPTIONS'
+
+@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'ADMIN_OPTIONS')
+def handle_admin_options(message):
+    if message.text == "Detener Registro de Sorteo":
+        # Implementar lógica para detener el registro
+        bot.reply_to(message, "Registro de sorteo detenido.")
+    elif message.text == "Elegir Ganador":
+        choose_winner(message)
+
+def choose_winner(message):
+    if not GIVEAWAY_PARTICIPANTS:
+        bot.reply_to(message, "No hay participantes en el sorteo.")
+        return
+
+    # Mostrar todos los participantes
+    for user_id in GIVEAWAY_PARTICIPANTS:
+        user = bot.get_chat_member(GROUP_CHAT_ID, user_id).user
+        bot.send_message(message.chat.id, f"Participante: {user.first_name} (@{user.username})")
+        time.sleep(1)  # Pausa para efecto dramático
+
+    # Proceso de eliminación
+    remaining = GIVEAWAY_PARTICIPANTS.copy()
+    while len(remaining) > 1:
+        eliminated = random.choice(remaining)
+        remaining.remove(eliminated)
+        user = bot.get_chat_member(GROUP_CHAT_ID, eliminated).user
+        bot.send_message(message.chat.id, f"Eliminado: {user.first_name} (@{user.username})")
+        time.sleep(1)
+
+    # Anunciar al ganador
+    winner_id = remaining[0]
+    winner = bot.get_chat_member(GROUP_CHAT_ID, winner_id).user
+    bot.send_message(message.chat.id, f"¡El ganador es: {winner.first_name} (@{winner.username})!")
+
 if __name__ == "__main__":
     logger.info("Bot iniciado. Esperando mensajes...")
     while True:
@@ -203,4 +293,3 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"Error en el polling del bot: {e}")
             time.sleep(10)
-
