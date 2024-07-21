@@ -26,7 +26,6 @@ translator = Translator()
 # Estados del usuario
 USER_STATES = {}
 
-
 # Lista para almacenar los participantes del sorteo
 GIVEAWAY_PARTICIPANTS = []
 
@@ -167,6 +166,7 @@ def handle_option(message):
     else:
         keyboard = create_keyboard(["Queja", "Petición", "Sugerencia", "Participar en Sorteo"])
         bot.send_message(message.chat.id, "Por favor, selecciona una opción válida.", reply_markup=keyboard)
+
 @bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_COMPLAINT')
 def handle_complaint(message):
     bot.forward_message(ADMIN_GROUP_ID, message.chat.id, message.message_id)
@@ -237,7 +237,7 @@ def register_for_giveaway(message):
         bot.reply_to(message, "Ya estás registrado para el sorteo. ¡Buena suerte!")
 
 def send_membership_error(message):
-    group_link = "https://t.me/+zO6rvZI5z4A4NmNh"  # Reemplaza con el enlace real del grupo
+    group_link = "https://t.me/CinePelis_1"  # Reemplaza con el enlace real del grupo
     channel_link = "https://t.me/peliculasymasg"  # Reemplaza con el enlace real del canal
     
     keyboard = create_inline_keyboard([
@@ -248,7 +248,7 @@ def send_membership_error(message):
     bot.reply_to(message, "Error: Debes unirte tanto al grupo como al canal para participar en el sorteo.", reply_markup=keyboard)
 
 def show_admin_options(message):
-    keyboard = create_keyboard(["Detener Registro de Sorteo", "Elegir Ganador"])
+    keyboard = create_keyboard(["Detener Registro de Sorteo", "Elegir Ganador", "Ver Participantes", "Volver"])
     bot.send_message(message.chat.id, "Opciones de administrador:", reply_markup=keyboard)
     USER_STATES[message.chat.id] = 'ADMIN_OPTIONS'
 
@@ -259,31 +259,77 @@ def handle_admin_options(message):
         bot.reply_to(message, "Registro de sorteo detenido.")
     elif message.text == "Elegir Ganador":
         choose_winner(message)
+    elif message.text == "Ver Participantes":
+        show_participants(message)
+        
+    elif message.text == "Volver":
+        send_welcome(message)
+    else:
+        bot.reply_to(message, "Opción no válida. Por favor, elige una opción del menú.")
+
+def show_participants(message):
+    if not GIVEAWAY_PARTICIPANTS:
+        bot.reply_to(message, "No hay participantes registrados en el sorteo.")
+        return
+
+    participant_list = "Participantes registrados:\n\n"
+    for user_id in GIVEAWAY_PARTICIPANTS:
+        try:
+            user = bot.get_chat_member(GROUP_CHAT_ID, user_id).user
+            participant_list += f"- {user.first_name} (@{user.username})\n"
+        except Exception as e:
+            logger.error(f"Error al obtener información del usuario {user_id}: {e}")
+            participant_list += f"- Usuario ID: {user_id} (información no disponible)\n"
+
+    # Dividir la lista en mensajes más pequeños si es necesario
+    max_message_length = 4096  # Límite de Telegram para la longitud de mensajes
+    while participant_list:
+        if len(participant_list) <= max_message_length:
+            bot.send_message(message.chat.id, participant_list)
+            break
+        else:
+            # Encontrar el último salto de línea dentro del límite
+            split_index = participant_list.rfind('\n', 0, max_message_length)
+            if split_index == -1:
+                split_index = max_message_length
+            bot.send_message(message.chat.id, participant_list[:split_index])
+            participant_list = participant_list[split_index:].lstrip()
+
+    # Mostrar el total de participantes
+    bot.send_message(message.chat.id, f"Total de participantes: {len(GIVEAWAY_PARTICIPANTS)}")
 
 def choose_winner(message):
     if not GIVEAWAY_PARTICIPANTS:
         bot.reply_to(message, "No hay participantes en el sorteo.")
         return
 
-    # Mostrar todos los participantes
-    for user_id in GIVEAWAY_PARTICIPANTS:
-        user = bot.get_chat_member(GROUP_CHAT_ID, user_id).user
-        bot.send_message(message.chat.id, f"Participante: {user.first_name} (@{user.username})")
-        time.sleep(1)  # Pausa para efecto dramático
-
     # Proceso de eliminación
     remaining = GIVEAWAY_PARTICIPANTS.copy()
+    eliminated_users = []
+    
     while len(remaining) > 1:
         eliminated = random.choice(remaining)
         remaining.remove(eliminated)
-        user = bot.get_chat_member(GROUP_CHAT_ID, eliminated).user
-        bot.send_message(message.chat.id, f"Eliminado: {user.first_name} (@{user.username})")
-        time.sleep(1)
+        eliminated_users.append(eliminated)
+    
+    # Anunciar eliminados
+    for user_id in eliminated_users:
+        try:
+            user = bot.get_chat_member(GROUP_CHAT_ID, user_id).user
+            bot.send_message(message.chat.id, f"Eliminado: {user.first_name} (@{user.username})")
+            time.sleep(1)  # Pausa para efecto dramático
+        except Exception as e:
+            logger.error(f"Error al obtener información del usuario eliminado {user_id}: {e}")
+            bot.send_message(message.chat.id, f"Eliminado: Usuario ID {user_id}")
 
     # Anunciar al ganador
     winner_id = remaining[0]
-    winner = bot.get_chat_member(GROUP_CHAT_ID, winner_id).user
-    bot.send_message(message.chat.id, f"¡El ganador es: {winner.first_name} (@{winner.username})!")
+    try:
+        winner = bot.get_chat_member(GROUP_CHAT_ID, winner_id).user
+        bot.send_message(message.chat.id, f"¡El ganador es: {winner.first_name} (@{winner.username})!")
+    except Exception as e:
+        logger.error(f"Error al obtener información del ganador {winner_id}: {e}")
+        bot.send_message(message.chat.id, f"¡El ganador es el usuario con ID: {winner_id}!")
 
 if __name__ == "__main__":
     logger.info("Bot iniciado. Esperando mensajes...")
