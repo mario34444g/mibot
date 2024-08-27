@@ -5,7 +5,7 @@ import re
 from imdb import Cinemagoer
 from googletrans import Translator
 import logging
-import random
+
 
 # Configuración del logging
 logging.basicConfig(level=logging.INFO)
@@ -26,8 +26,6 @@ translator = Translator()
 # Estados del usuario
 USER_STATES = {}
 
-# Lista para almacenar los participantes del sorteo
-GIVEAWAY_PARTICIPANTS = []
 
 def create_keyboard(buttons):
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -36,8 +34,8 @@ def create_keyboard(buttons):
 
 def create_inline_keyboard(buttons):
     keyboard = InlineKeyboardMarkup()
-    for text, url in buttons:
-        keyboard.add(InlineKeyboardButton(text, url=url))
+    for text, callback_data in buttons:
+        keyboard.add(InlineKeyboardButton(text, callback_data=callback_data))
     return keyboard
 
 def search_media(media_name):
@@ -141,10 +139,7 @@ def handle_group_message(message):
 def send_welcome(message):
     username = message.from_user.first_name
     welcome_message = f"Hola {username}, ¿qué quieres hacer?"
-    keyboard = create_keyboard(["Queja", "Petición", "Sugerencia", "Participar en Sorteo"])
-    # Agregar botón exclusivo para el administrador
-    if message.from_user.id == ADMIN_USER_ID:
-        keyboard.add(KeyboardButton("Gestionar Sorteo"))
+    keyboard = create_keyboard(["Queja", "Petición", "Sugerencia"])
     bot.send_message(message.chat.id, welcome_message, reply_markup=keyboard)
     USER_STATES[message.chat.id] = 'WAITING_FOR_OPTION'
 
@@ -154,45 +149,91 @@ def handle_option(message):
         bot.send_message(message.chat.id, "Por favor, deja tu queja:")
         USER_STATES[message.chat.id] = 'WAITING_FOR_COMPLAINT'
     elif message.text == "Petición":
-        bot.send_message(message.chat.id, "Asegúrate de que lo que pides no está en el grupo. Recuerda usar la barra superior derecha para buscar. ¿Qué quieres pedir?")
-        USER_STATES[message.chat.id] = 'WAITING_FOR_REQUEST'
+        bot.send_message(message.chat.id, "Asegúrate de que lo que pides no está en el grupo. ¿Estás seguro/a de que NO está en el grupo?", reply_markup=create_keyboard(["Sí", "No"]))
+        USER_STATES[message.chat.id] = 'CONFIRMING_REQUEST'
     elif message.text == "Sugerencia":
         bot.send_message(message.chat.id, "Por favor, deja tu sugerencia:")
         USER_STATES[message.chat.id] = 'WAITING_FOR_SUGGESTION'
-    elif message.text == "Participar en Sorteo":
-        check_membership(message)
-    elif message.text == "Gestionar Sorteo" and message.from_user.id == ADMIN_USER_ID:
-        show_admin_options(message)
     else:
-        keyboard = create_keyboard(["Queja", "Petición", "Sugerencia", "Participar en Sorteo"])
+        keyboard = create_keyboard(["Queja", "Petición", "Sugerencia"])
         bot.send_message(message.chat.id, "Por favor, selecciona una opción válida.", reply_markup=keyboard)
+
+@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'CONFIRMING_REQUEST')
+def confirm_request(message):
+    if message.text == "Sí":
+        bot.send_message(message.chat.id, "Bien. Deja el nombre de lo que pides de manera clara, indicando si es serie o película. Puedes adjuntar una foto o video si lo deseas.")
+        USER_STATES[message.chat.id] = 'WAITING_FOR_REQUEST'
+    elif message.text == "No":
+        bot.send_message(message.chat.id, "Por favor, busca bien en el grupo usando la barra de búsqueda. Si no lo encuentras, puedes hacer una nueva petición.")
+        ask_for_more(message.chat.id)
+    else:
+        bot.send_message(message.chat.id, "Por favor, responde 'Sí' o 'No'.", reply_markup=create_keyboard(["Sí", "No"]))
+
+@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_REQUEST', content_types=['text', 'photo', 'video'])
+def handle_request(message):
+    user_info = f"Petición de {message.from_user.first_name} (@{message.from_user.username}):"
+    if message.content_type == 'text':
+        request_text = message.text
+        bot.send_message(ADMIN_GROUP_ID, f"{user_info}\n{request_text}", reply_markup=create_inline_keyboard([("Petición tomada", f"taken_{message.chat.id}"), ("Lo que buscas ya está", f"exists_{message.chat.id}")]))
+    else:
+        bot.forward_message(ADMIN_GROUP_ID, message.chat.id, message.message_id)
+        bot.send_message(ADMIN_GROUP_ID, user_info, reply_markup=create_inline_keyboard([("Petición tomada", f"taken_{message.chat.id}"), ("Lo que buscas ya está", f"exists_{message.chat.id}")]))
+    
+    bot.send_message(message.chat.id, "Tu petición ha sido enviada a los administradores. Te notificaremos cuando sea procesada.")
+    ask_for_more(message.chat.id)
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_query(call):
+    action, user_id = call.data.split('_')
+    user_id = int(user_id)
+    
+    if action == "taken":
+        bot.answer_callback_query(call.id, "Petición tomada")
+        bot.send_message(user_id, "Tu petición ha sido tomada por un administrador. Está atento/a en los próximos minutos en Cinepelis.")
+        bot.send_message(call.message.chat.id, f"Has tomado la petición. ¿Qué quieres responder al usuario?")
+        USER_STATES[call.message.chat.id] = f'ADMIN_RESPONDING_{user_id}'
+    elif action == "exists":
+        bot.answer_callback_query(call.id, "Ya existe")
+        bot.send_message(user_id, "Lo que buscas ya está disponible en el grupo. Por favor, usa la barra de búsqueda para encontrarlo.")
+
+@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id, '').startswith('ADMIN_RESPONDING_'))
+def admin_response(message):
+    user_id = int(USER_STATES[message.chat.id].split('_')[-1])
+    bot.send_message(user_id, f"Respuesta del administrador: {message.text}")
+    bot.send_message(message.chat.id, "Tu respuesta ha sido enviada al usuario.")
+    USER_STATES[message.chat.id] = 'IDLE'
 
 @bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_COMPLAINT')
 def handle_complaint(message):
     bot.forward_message(ADMIN_GROUP_ID, message.chat.id, message.message_id)
-    bot.send_message(ADMIN_GROUP_ID, f"Nueva queja de {message.from_user.first_name} (@{message.from_user.username}):")
-    bot.send_message(message.chat.id, "Gracias por tu queja. ¿Quieres hablar con un administrador?", reply_markup=create_keyboard(["Sí", "No"]))
-    USER_STATES[message.chat.id] = 'WAITING_FOR_ADMIN_DECISION'
-
-@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_ADMIN_DECISION')
-def handle_admin_decision(message):
-    if message.text == "Sí":
-        bot.send_message(ADMIN_GROUP_ID, f"@admin El usuario {message.from_user.first_name} (@{message.from_user.username}) quiere hablar con un administrador.")
-        bot.send_message(message.chat.id, "Un administrador se pondrá en contacto contigo pronto.")
-    elif message.text == "No":
-        bot.send_message(message.chat.id, "Entendido. Gracias por tu queja.")
-    else:
-        bot.send_message(message.chat.id, "Por favor, selecciona 'Sí' o 'No'.", reply_markup=create_keyboard(["Sí", "No"]))
-        return
+    bot.send_message(ADMIN_GROUP_ID, f"Nueva queja de {message.from_user.first_name} (@{message.from_user.username}):", 
+                     reply_markup=create_inline_keyboard([("Tomar", f"take_{message.chat.id}"), ("Rechazar", f"reject_{message.chat.id}")]))
+    bot.send_message(message.chat.id, "Gracias por tu queja. Un administrador la revisará pronto.")
     ask_for_more(message.chat.id)
 
-@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_REQUEST')
-def handle_request(message):
-    bot.forward_message(ADMIN_GROUP_ID, message.chat.id, message.message_id)
-    bot.send_message(ADMIN_GROUP_ID, f"Nueva petición de {message.from_user.first_name} (@{message.from_user.username}):")
-    bot.send_message(message.chat.id, "Petición tomada. Pronto estará disponible.")
-    ask_for_more(message.chat.id)
+@bot.callback_query_handler(func=lambda call: call.data.startswith(('take_', 'reject_')))
+def handle_admin_action(call):
+    action, user_id = call.data.split('_')
+    user_id = int(user_id)
+    
+    if action == "take":
+        bot.answer_callback_query(call.id, "Has tomado la queja")
+        bot.send_message(user_id, "Un administrador ha tomado tu queja y te responderá pronto.")
+        bot.send_message(call.message.chat.id, f"Has tomado la queja. ¿Qué quieres responder al usuario?")
+        USER_STATES[call.message.chat.id] = f'ADMIN_RESPONDING_{user_id}'
+    elif action == "reject":
+        bot.answer_callback_query(call.id, "Has rechazado la queja")
+        bot.send_message(user_id, "Lo sentimos, en este momento no podemos atender tu queja. Por favor, intenta más tarde.")
+        USER_STATES[call.message.chat.id] = 'IDLE'
 
+@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id, '').startswith('ADMIN_RESPONDING_'))
+def admin_response(message):
+    user_id = int(USER_STATES[message.chat.id].split('_')[-1])
+    bot.send_message(user_id, f"Respuesta del administrador a tu queja: {message.text}")
+    bot.send_message(message.chat.id, "Tu respuesta ha sido enviada al usuario.")
+    USER_STATES[message.chat.id] = 'IDLE'
+    ask_for_more(user_id)
+    
 @bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_SUGGESTION')
 def handle_suggestion(message):
     bot.forward_message(ADMIN_GROUP_ID, message.chat.id, message.message_id)
@@ -201,141 +242,27 @@ def handle_suggestion(message):
     ask_for_more(message.chat.id)
 
 def ask_for_more(chat_id):
-    keyboard = create_keyboard(["Queja", "Petición", "Sugerencia", "Participar en Sorteo", "Salir"])
-    bot.send_message(chat_id, "¿Quieres hacer algo más?", reply_markup=keyboard)
-    USER_STATES[chat_id] = 'ASKING_FOR_MORE'
+    keyboard = create_keyboard(["Queja", "Petición", "Sugerencia", "Nada"])
+    bot.send_message(chat_id, "¿Hay algo más que quieras hacer?", reply_markup=keyboard)
+    USER_STATES[chat_id] = 'WAITING_FOR_MORE'
 
-@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'ASKING_FOR_MORE')
+@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_MORE')
 def handle_more(message):
-    if message.text == "Salir":
-        bot.send_message(message.chat.id, "Gracias por usar nuestro servicio. ¡Hasta pronto!")
-        USER_STATES[message.chat.id] = 'FINISHED'
+    if message.text == "Nada":
+        bot.send_message(message.chat.id, "Gracias por comunicarte. ¡Hasta la próxima!")
+        USER_STATES[message.chat.id] = 'IDLE'
     else:
         handle_option(message)
 
-def check_membership(message):
-    user_id = message.from_user.id
-    try:
-        # Verificar membresía en el grupo
-        group_member = bot.get_chat_member(GROUP_CHAT_ID, user_id)
-        # Verificar membresía en el canal
-        channel_member = bot.get_chat_member(CHANNEL_ID, user_id)
-        
-        if group_member.status in ['member', 'administrator', 'creator'] and channel_member.status in ['member', 'administrator', 'creator']:
-            register_for_giveaway(message)
-        else:
-            send_membership_error(message)
-    except telebot.apihelper.ApiException:
-        send_membership_error(message)
-
-def register_for_giveaway(message):
-    user_id = message.from_user.id
-    if user_id not in GIVEAWAY_PARTICIPANTS:
-        GIVEAWAY_PARTICIPANTS.append(user_id)
-        bot.reply_to(message, "¡Bien cariño! Te has registrado para el sorteo. Espera hasta el 25 para conocer si fuiste ganad@r.")
-    else:
-        bot.reply_to(message, "Ya estás registrado para el sorteo. ¡Buena suerte!")
-
-def send_membership_error(message):
-    group_link = "https://t.me/CinePelis_1"  # Reemplaza con el enlace real del grupo
-    channel_link = "https://t.me/peliculasymasg"  # Reemplaza con el enlace real del canal
-    
-    keyboard = create_inline_keyboard([
-        ("Unirse al Grupo", group_link),
-        ("Unirse al Canal", channel_link)
-    ])
-    
-    bot.reply_to(message, "Error: Debes unirte tanto al grupo como al canal para participar en el sorteo.", reply_markup=keyboard)
-
-def show_admin_options(message):
-    keyboard = create_keyboard(["Detener Registro de Sorteo", "Elegir Ganador", "Ver Participantes", "Volver"])
-    bot.send_message(message.chat.id, "Opciones de administrador:", reply_markup=keyboard)
-    USER_STATES[message.chat.id] = 'ADMIN_OPTIONS'
-
-@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'ADMIN_OPTIONS')
-def handle_admin_options(message):
-    if message.text == "Detener Registro de Sorteo":
-        # Implementar lógica para detener el registro
-        bot.reply_to(message, "Registro de sorteo detenido.")
-    elif message.text == "Elegir Ganador":
-        choose_winner(message)
-    elif message.text == "Ver Participantes":
-        show_participants(message)
-        
-    elif message.text == "Volver":
-        send_welcome(message)
-    else:
-        bot.reply_to(message, "Opción no válida. Por favor, elige una opción del menú.")
-
-def show_participants(message):
-    if not GIVEAWAY_PARTICIPANTS:
-        bot.reply_to(message, "No hay participantes registrados en el sorteo.")
-        return
-
-    participant_list = "Participantes registrados:\n\n"
-    for user_id in GIVEAWAY_PARTICIPANTS:
+def delete_group_notifications(message):
+    if message.content_type == 'new_chat_members':
         try:
-            user = bot.get_chat_member(GROUP_CHAT_ID, user_id).user
-            participant_list += f"- {user.first_name} (@{user.username})\n"
+            bot.delete_message(message.chat.id, message.message_id)
         except Exception as e:
-            logger.error(f"Error al obtener información del usuario {user_id}: {e}")
-            participant_list += f"- Usuario ID: {user_id} (información no disponible)\n"
+            logger.error(f"Error al eliminar notificación de nuevos miembros: {e}")
 
-    # Dividir la lista en mensajes más pequeños si es necesario
-    max_message_length = 4096  # Límite de Telegram para la longitud de mensajes
-    while participant_list:
-        if len(participant_list) <= max_message_length:
-            bot.send_message(message.chat.id, participant_list)
-            break
-        else:
-            # Encontrar el último salto de línea dentro del límite
-            split_index = participant_list.rfind('\n', 0, max_message_length)
-            if split_index == -1:
-                split_index = max_message_length
-            bot.send_message(message.chat.id, participant_list[:split_index])
-            participant_list = participant_list[split_index:].lstrip()
+@bot.message_handler(func=lambda message: True, content_types=['new_chat_members'])
+def handle_new_chat_members(message):
+    delete_group_notifications(message)
 
-    # Mostrar el total de participantes
-    bot.send_message(message.chat.id, f"Total de participantes: {len(GIVEAWAY_PARTICIPANTS)}")
-
-def choose_winner(message):
-    if not GIVEAWAY_PARTICIPANTS:
-        bot.reply_to(message, "No hay participantes en el sorteo.")
-        return
-
-    # Proceso de eliminación
-    remaining = GIVEAWAY_PARTICIPANTS.copy()
-    eliminated_users = []
-    
-    while len(remaining) > 1:
-        eliminated = random.choice(remaining)
-        remaining.remove(eliminated)
-        eliminated_users.append(eliminated)
-    
-    # Anunciar eliminados
-    for user_id in eliminated_users:
-        try:
-            user = bot.get_chat_member(GROUP_CHAT_ID, user_id).user
-            bot.send_message(message.chat.id, f"Eliminado: {user.first_name} (@{user.username})")
-            time.sleep(1)  # Pausa para efecto dramático
-        except Exception as e:
-            logger.error(f"Error al obtener información del usuario eliminado {user_id}: {e}")
-            bot.send_message(message.chat.id, f"Eliminado: Usuario ID {user_id}")
-
-    # Anunciar al ganador
-    winner_id = remaining[0]
-    try:
-        winner = bot.get_chat_member(GROUP_CHAT_ID, winner_id).user
-        bot.send_message(message.chat.id, f"¡El ganador es: {winner.first_name} (@{winner.username})!")
-    except Exception as e:
-        logger.error(f"Error al obtener información del ganador {winner_id}: {e}")
-        bot.send_message(message.chat.id, f"¡El ganador es el usuario con ID: {winner_id}!")
-
-if __name__ == "__main__":
-    logger.info("Bot iniciado. Esperando mensajes...")
-    while True:
-        try:
-            bot.polling(none_stop=True)
-        except Exception as e:
-            logger.error(f"Error en el polling del bot: {e}")
-            time.sleep(10)
+bot.infinity_polling()
