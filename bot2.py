@@ -6,12 +6,9 @@ from imdb import Cinemagoer
 from googletrans import Translator
 import logging
 
-
-# Configuración del logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuración del bot
 API_KEY = '7458928597:AAGAyVvFXJ7QSWuY0-hpBA7xgOqYBtbxxW8'
 GROUP_CHAT_ID = -1002199010991
 ADMIN_GROUP_ID = -4284232130
@@ -19,13 +16,10 @@ CHANNEL_ID = -1002176864902
 ADMIN_USER_ID = 1404317898
 bot = telebot.TeleBot(API_KEY)
 
-# Configuración de IMDb y Traductor
 ia = Cinemagoer()
 translator = Translator()
 
-# Estados del usuario
 USER_STATES = {}
-
 
 def create_keyboard(buttons):
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -41,22 +35,16 @@ def create_inline_keyboard(buttons):
 def search_media(media_name):
     try:
         cleaned_name = re.sub(r'\(\d{4}\)', '', media_name).strip()
-        
-        # Intentar buscar sin especificar idioma
         results = ia.search_movie(cleaned_name)
-        
         if results:
             for result in results:
                 try:
                     media_id = result.movieID
                     media = ia.get_movie(media_id)
-                    
-                    # Aceptar tanto películas como series de TV
                     if media.get('kind') in ['movie', 'tv series']:
                         return media
                 except Exception as e:
                     logger.error(f"Error al obtener detalles del medio: {e}")
-        
         return None
     except Exception as e:
         logger.error(f"Error en la búsqueda de medios: {e}")
@@ -87,21 +75,18 @@ def handle_media_upload(message):
             if isinstance(plot, list):
                 plot = plot[0] if plot else 'Sin descripción disponible'
             
-            # Traducir la sinopsis al español
             try:
                 plot_es = translator.translate(plot, dest='es').text
             except Exception as e:
                 logger.error(f"Error en la traducción: {e}")
-                plot_es = plot  # Si falla la traducción, usamos el texto original
+                plot_es = plot
             
             poster_url = media_info.get('full-size cover url') or media_info.get('cover url')
 
             message_link = f"https://t.me/c/{str(message.chat.id)[4:]}/{message.message_id}"
 
-            # Determinar si es una película o una serie
             media_type = "PELÍCULA" if media_info.get('kind') == 'movie' else "SERIE"
 
-            # Crear el texto del mensaje con el formato solicitado
             caption = (f"*{title}* ({year})\n\n"
                        f"{plot_es[:200]}...\n\n"
                        f"[VER {media_type} {title.upper()} AQUÍ]({message_link})\n\n"
@@ -195,6 +180,16 @@ def handle_query(call):
     elif action == "exists":
         bot.answer_callback_query(call.id, "Ya existe")
         bot.send_message(user_id, "Lo que buscas ya está disponible en el grupo. Por favor, usa la barra de búsqueda para encontrarlo.")
+    elif action == "take":
+        bot.answer_callback_query(call.id, "Has tomado la queja")
+        bot.send_message(user_id, "Un administrador ha tomado tu queja y te responderá pronto.")
+        bot.send_message(call.message.chat.id, f"Has tomado la queja. ¿Qué quieres responder al usuario?")
+        USER_STATES[call.message.chat.id] = f'ADMIN_RESPONDING_{user_id}'
+    elif action == "reject":
+        bot.answer_callback_query(call.id, "Has rechazado la queja")
+        bot.send_message(user_id, "Lo sentimos, en este momento no podemos atender tu queja. Por favor, intenta más tarde.")
+        USER_STATES[user_id] = 'IDLE'
+        ask_for_more(user_id)
 
 @bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id, '').startswith('ADMIN_RESPONDING_'))
 def admin_response(message):
@@ -202,6 +197,7 @@ def admin_response(message):
     bot.send_message(user_id, f"Respuesta del administrador: {message.text}")
     bot.send_message(message.chat.id, "Tu respuesta ha sido enviada al usuario.")
     USER_STATES[message.chat.id] = 'IDLE'
+    ask_for_more(user_id)
 
 @bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_COMPLAINT')
 def handle_complaint(message):
@@ -211,29 +207,6 @@ def handle_complaint(message):
     bot.send_message(message.chat.id, "Gracias por tu queja. Un administrador la revisará pronto.")
     ask_for_more(message.chat.id)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith(('take_', 'reject_')))
-def handle_admin_action(call):
-    action, user_id = call.data.split('_')
-    user_id = int(user_id)
-    
-    if action == "take":
-        bot.answer_callback_query(call.id, "Has tomado la queja")
-        bot.send_message(user_id, "Un administrador ha tomado tu queja y te responderá pronto.")
-        bot.send_message(call.message.chat.id, f"Has tomado la queja. ¿Qué quieres responder al usuario?")
-        USER_STATES[call.message.chat.id] = f'ADMIN_RESPONDING_{user_id}'
-    elif action == "reject":
-        bot.answer_callback_query(call.id, "Has rechazado la queja")
-        bot.send_message(user_id, "Lo sentimos, en este momento no podemos atender tu queja. Por favor, intenta más tarde.")
-        USER_STATES[call.message.chat.id] = 'IDLE'
-
-@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id, '').startswith('ADMIN_RESPONDING_'))
-def admin_response(message):
-    user_id = int(USER_STATES[message.chat.id].split('_')[-1])
-    bot.send_message(user_id, f"Respuesta del administrador a tu queja: {message.text}")
-    bot.send_message(message.chat.id, "Tu respuesta ha sido enviada al usuario.")
-    USER_STATES[message.chat.id] = 'IDLE'
-    ask_for_more(user_id)
-    
 @bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_SUGGESTION')
 def handle_suggestion(message):
     bot.forward_message(ADMIN_GROUP_ID, message.chat.id, message.message_id)
