@@ -6,8 +6,11 @@ from imdb import Cinemagoer
 from googletrans import Translator
 import logging
 
-logging.basicConfig(level=logging.INFO)
+
+# Configuración de logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
 
 API_KEY = '7458928597:AAGAyVvFXJ7QSWuY0-hpBA7xgOqYBtbxxW8'
 GROUP_CHAT_ID = -1002417154160
@@ -53,60 +56,81 @@ def search_media(media_name):
 @bot.message_handler(func=lambda message: message.chat.type == 'supergroup', content_types=['document', 'video'])
 def handle_media_upload(message):
     try:
-        if message.document:
-            file_name = message.document.file_name
-        elif message.video:
-            file_name = message.video.file_name
+        logger.info(f"Nuevo mensaje recibido. Tipo: {message.content_type}")
+        
+        # Usar el texto del mensaje (subtítulo) si está disponible
+        if message.caption:
+            media_name = message.caption.split('\n')[0]  # Tomar la primera línea del subtítulo
+            logger.info(f"Subtítulo encontrado: {media_name}")
         else:
-            logger.warning("Mensaje recibido sin documento ni video")
-            return
+            # Si no hay subtítulo, usar el nombre del archivo como respaldo
+            if message.document:
+                media_name = message.document.file_name
+                logger.info(f"Usando nombre de documento: {media_name}")
+            elif message.video:
+                media_name = message.video.file_name
+                logger.info(f"Usando nombre de video: {media_name}")
+            else:
+                logger.warning("Mensaje recibido sin documento, video ni subtítulo")
+                return
 
-        if not file_name:
-            logger.warning("Nombre de archivo no disponible")
-            return
+        # Limpiar el nombre del medio
+        media_name = re.sub(r'\([^)]*\)', '', media_name)  # Eliminar cualquier cosa entre paréntesis
+        media_name = media_name.split('.')[0].strip()  # Eliminar la extensión del archivo si existe
+        logger.info(f"Nombre del medio limpio: {media_name}")
 
-        media_name = file_name.split('.')[0].replace('_', ' ').title()
-
+        logger.info(f"Buscando información para: {media_name}")
         media_info = search_media(media_name)
+        
         if media_info:
+            logger.info(f"Información encontrada para {media_name}")
             title = media_info.get('title', 'Sin título')
             year = media_info.get('year', 'Año desconocido')
             plot = media_info.get('plot outline', 'Sin descripción disponible')
             if isinstance(plot, list):
                 plot = plot[0] if plot else 'Sin descripción disponible'
             
+            logger.info("Intentando traducir la descripción")
             try:
                 plot_es = translator.translate(plot, dest='es').text
+                logger.info("Traducción exitosa")
             except Exception as e:
                 logger.error(f"Error en la traducción: {e}")
                 plot_es = plot
             
             poster_url = media_info.get('full-size cover url') or media_info.get('cover url')
+            logger.info(f"URL del póster: {poster_url}")
 
             message_link = f"https://t.me/c/{str(message.chat.id)[4:]}/{message.message_id}"
+            logger.info(f"Enlace del mensaje: {message_link}")
 
             media_type = "PELÍCULA" if media_info.get('kind') == 'movie' else "SERIE"
+            logger.info(f"Tipo de medio: {media_type}")
 
             caption = (f"*{title}* ({year})\n\n"
                        f"{plot_es[:200]}...\n\n"
                        f"[VER {media_type} {title.upper()} AQUÍ]({message_link})\n\n"
                        "[CINEPELIS 🍿](https://t.me/peliculasymasg)")
-
+            
+            logger.info("Intentando enviar el mensaje al canal")
             try:
                 if poster_url:
                     bot.send_photo(CHANNEL_ID, 
                                    poster_url, 
                                    caption=caption, 
                                    parse_mode='Markdown')
+                    logger.info("Foto con caption enviada exitosamente")
                 else:
                     bot.send_message(CHANNEL_ID, caption, parse_mode='Markdown')
+                    logger.info("Mensaje de texto enviado exitosamente")
             except Exception as e:
                 logger.error(f"Error al enviar la portada: {e}")
                 bot.reply_to(message, "Hubo un error al crear la portada. Por favor, inténtalo de nuevo más tarde.")
         else:
-            bot.reply_to(message, "No se pudo encontrar información sobre esta película o serie.")
+            logger.warning(f"No se encontró información para: {media_name}")
+            bot.reply_to(message, "No se pudo encontrar información sobre esta película o serie. Por favor, asegúrate de incluir el nombre correcto en el subtítulo del mensaje.")
     except Exception as e:
-        logger.error(f"Error en handle_media_upload: {e}")
+        logger.error(f"Error en handle_media_upload: {e}", exc_info=True)
         bot.reply_to(message, "Ocurrió un error al procesar el archivo. Por favor, inténtalo de nuevo más tarde.")
 
 @bot.message_handler(func=lambda message: message.chat.type == 'supergroup')
