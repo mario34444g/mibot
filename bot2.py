@@ -12,11 +12,11 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(leve
 logger = logging.getLogger(__name__)
 
 
-API_KEY = '7458928597:AAGAyVvFXJ7QSWuY0-hpBA7xgOqYBtbxxW8'
-GROUP_CHAT_ID = -1002417154160
-ADMIN_GROUP_ID = -4284232130
+API_KEY = '7600046039:AAGIWIlILfBdKl0qt4gLE8UTN0L_qGJIbB4'
+GROUP_CHAT_ID = -1002271682346
+ADMIN_GROUP_ID = -4634644543
 CHANNEL_ID = -1002176864902
-ADMIN_USER_ID = 1404317898
+ADMIN_USER_ID = 7753923473
 bot = telebot.TeleBot(API_KEY)
 
 ia = Cinemagoer()
