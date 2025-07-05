@@ -26,8 +26,9 @@ ADMIN_USER_ID = 7753923473
 
 # Configuración de Gemini
 GEMINI_API_KEY = "AIzaSyAK4dCqDDoXXOK4IoTsjtQT76vZ9nXDRf4"
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key={GEMINI_API_KEY}" # Usamos el modelo Vision para imágenes
-GEMINI_TEXT_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}" # Modelo de texto para conversaciones
+# CORRECCIÓN: Usar el modelo de texto solicitado y el modelo de visión correcto.
+GEMINI_VISION_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key={GEMINI_API_KEY}" # Modelo Vision para imágenes
+GEMINI_TEXT_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}" # Modelo de texto solicitado
 
 # --- CONFIGURACIÓN DE BASE DE DATOS LOCAL ---
 DB_FILE = 'movies_database.json'
@@ -180,7 +181,7 @@ def ask_gemini_with_image(user_text, image_data_base64):
         }]
     }
     
-    response = requests.post(GEMINI_URL, json=payload, timeout=30)
+    response = requests.post(GEMINI_VISION_URL, json=payload, timeout=30)
     response.raise_for_status()
     result = response.json()
     return result['candidates'][0]['content']['parts'][0]['text']
@@ -569,6 +570,15 @@ if __name__ == '__main__':
             try:
                 logger.info("Iniciando el bot con funcionalidades mejoradas y bucle guardián...")
                 bot.infinity_polling(skip_pending=True, timeout=40, long_polling_timeout=60)
+            except telebot.apihelper.ApiTelegramException as e:
+                # CORRECCIÓN: Manejar el error 409 específicamente
+                if e.error_code == 409:
+                    logger.warning("Conflicto detectado (Error 409). Probablemente otra instancia del bot está corriendo.")
+                    logger.info("Pausa de 60 segundos para permitir que la otra instancia se detenga antes de reiniciar.")
+                    time.sleep(60)
+                else:
+                    logger.error(f"Error de API de Telegram no manejado: {e}", exc_info=True)
+                    time.sleep(20)
             except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:
                 logger.error(f"Error de red detectado: {e}", exc_info=True)
                 logger.info("Pausa de 15 segundos antes de reiniciar debido a error de red...")
@@ -577,3 +587,4 @@ if __name__ == '__main__':
                 logger.error(f"El bot se ha detenido debido a un error inesperado: {e}", exc_info=True)
                 logger.info("Reiniciando el bot en 20 segundos...")
                 time.sleep(20)
+
