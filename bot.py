@@ -26,9 +26,8 @@ ADMIN_USER_ID = 7753923473
 
 # Configuración de Gemini
 GEMINI_API_KEY = "AIzaSyAK4dCqDDoXXOK4IoTsjtQT76vZ9nXDRf4"
-# CORRECCIÓN: Usar el modelo de texto solicitado y el modelo de visión correcto.
-GEMINI_VISION_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key={GEMINI_API_KEY}" # Modelo Vision para imágenes
-GEMINI_TEXT_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}" # Modelo de texto solicitado
+# CORRECCIÓN: Unificar al modelo más moderno que maneja texto e imágenes.
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_API_KEY}"
 
 # --- CONFIGURACIÓN DE BASE DE DATOS LOCAL ---
 DB_FILE = 'movies_database.json'
@@ -99,7 +98,7 @@ def search_movie_in_database(query):
                 found_movies.add(unique_identifier)
     return results
 
-# --- NUEVA FUNCIÓN DE IA PARA CHAT PRIVADO ---
+# --- FUNCIÓN DE IA MEJORADA PARA CHAT PRIVADO ---
 def ask_gemini_private_chat(user_message):
     """
     Maneja la conversación general en el chat privado, dando consejos
@@ -138,14 +137,14 @@ def ask_gemini_private_chat(user_message):
     Ahora, analiza el mensaje y genera la respuesta perfecta.
     """
     payload = {"contents": [{"parts": [{"text": context_prompt}]}]}
-    response = requests.post(GEMINI_TEXT_URL, json=payload, timeout=25)
+    response = requests.post(GEMINI_URL, json=payload, timeout=25)
     response.raise_for_status()
     result = response.json()
     return result['candidates'][0]['content']['parts'][0]['text']
 
-# --- NUEVA FUNCIÓN DE IA PARA ANALIZAR IMÁGENES ---
+# --- FUNCIÓN DE IA MEJORADA PARA ANALIZAR IMÁGENES ---
 def ask_gemini_with_image(user_text, image_data_base64):
-    """Analiza una imagen y un texto usando Gemini Vision."""
+    """Analiza una imagen y un texto usando Gemini 1.5 Flash."""
     prompt = f"""
     Eres Lucy, la asistente IA del canal de películas y series CINEPELIS 🍿.
     Un usuario te ha enviado una imagen. Tu tarea es analizarla y responder de forma útil y cinéfila.
@@ -181,7 +180,7 @@ def ask_gemini_with_image(user_text, image_data_base64):
         }]
     }
     
-    response = requests.post(GEMINI_VISION_URL, json=payload, timeout=30)
+    response = requests.post(GEMINI_URL, json=payload, timeout=30)
     response.raise_for_status()
     result = response.json()
     return result['candidates'][0]['content']['parts'][0]['text']
@@ -252,7 +251,7 @@ def send_welcome(message):
         return
     username = message.from_user.first_name
     welcome_message = f"Hola {username}, soy Lucy 🤖 de CINEPELIS 🍿\n\n¿En qué puedo ayudarte hoy?\n\n🎬 También puedes escribirme directamente el nombre de una película o serie para buscarla, ¡o enviarme un póster para que lo analice!"
-    keyboard = create_keyboard(["Hacer una Petición", "Tengo una Queja/Sugerencia"])
+    keyboard = create_keyboard(["Buscar Película/Serie", "Hacer una Petición", "Tengo una Queja/Sugerencia"])
     bot.send_message(message.chat.id, welcome_message, reply_markup=keyboard)
     USER_STATES[message.chat.id] = 'WAITING_FOR_OPTION'
 
@@ -329,7 +328,7 @@ def unified_group_handler(message):
                 caption = (f"*{display_title}* ({year})\n\n"
                            f"{plot_es[:200]}...\n\n"
                            f"[VER {media_type} {display_title.upper()} AQUÍ]({message_link})\n\n"
-                           "[CINEPELIS 🍿](https://t.me/pelicuilasymasg)")
+                           "[CINEPELIS �](https://t.me/pelicuilasymasg)")
                 try:
                     if poster_url:
                         logger.info(f"Enviando foto al canal {CHANNEL_ID}")
@@ -376,44 +375,56 @@ def handle_option_and_general_chat(message):
     elif message.text == "Hacer una Petición":
         bot.send_message(message.chat.id, "¡Claro! Pero primero, asegúrate de haber buscado bien en el canal. ¿Estás seguro/a de que lo que pides NO está ya disponible?", reply_markup=create_keyboard(["Sí, estoy seguro", "No, déjame revisar"]))
         USER_STATES[message.chat.id] = 'CONFIRMING_REQUEST'
+    elif message.text == "Buscar Película/Serie":
+        bot.send_message(message.chat.id, "🎬 ¡Claro! Escribe el nombre de la película o serie que buscas:")
+        USER_STATES[message.chat.id] = 'WAITING_FOR_SEARCH_QUERY'
     else:
         # Si no es un botón, es una conversación general
         try:
             bot.send_chat_action(message.chat.id, 'typing')
             ai_response = ask_gemini_private_chat(message.text)
             bot.send_message(message.chat.id, ai_response, parse_mode='Markdown')
-            # Después de responder, le volvemos a preguntar qué quiere hacer
             ask_for_more(message.chat.id)
         except Exception as e:
             logger.error(f"Error en el chat general con Gemini: {e}")
             bot.send_message(message.chat.id, "¡Uups! Parece que mis circuitos cinéfilos se cruzaron. Inténtalo de nuevo en un momento.")
 
+# --- NUEVO: MANEJADOR PARA BÚSQUEDAS EXPLÍCITAS ---
+@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'WAITING_FOR_SEARCH_QUERY', content_types=['text'])
+def handle_movie_search(message):
+    """Maneja la búsqueda de películas cuando el usuario ha pulsado el botón."""
+    try:
+        query = message.text
+        bot.send_message(message.chat.id, f"🔍 Buscando '{query}' en nuestra filmoteca...")
+        bot.send_chat_action(message.chat.id, 'typing')
+        # Reutilizamos la función de IA para una respuesta inteligente
+        ai_response = ask_gemini_private_chat(query)
+        bot.send_message(message.chat.id, ai_response, parse_mode='Markdown')
+        ask_for_more(message.chat.id)
+    except Exception as e:
+        logger.error(f"Error en la búsqueda explícita con Gemini: {e}")
+        bot.send_message(message.chat.id, "Lo siento, hubo un error al realizar la búsqueda. Por favor, intenta de nuevo más tarde.")
+        ask_for_more(message.chat.id)
 
 # --- NUEVO: MANEJADOR PARA IMÁGENES EN CHAT PRIVADO ---
 @bot.message_handler(func=lambda message: message.chat.type == 'private', content_types=['photo'])
 def handle_private_photo(message):
     try:
-        bot.send_message(message.chat.id, "🤖 Analizando la imagen, un momento por favor...")
+        bot.send_message(message.chat.id, "🤖 ¡Qué buena foto! Déjame analizarla, un momento por favor...")
         bot.send_chat_action(message.chat.id, 'typing')
         
-        # Descargar la imagen
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
-        
-        # Codificar en base64
         image_base64 = base64.b64encode(downloaded_file).decode('utf-8')
-        
-        # Obtener el caption si existe
         user_caption = message.caption if message.caption else ""
         
-        # Enviar a Gemini Vision
         ai_response = ask_gemini_with_image(user_caption, image_base64)
         bot.send_message(message.chat.id, ai_response, parse_mode='Markdown')
         ask_for_more(message.chat.id)
 
     except Exception as e:
         logger.error(f"Error procesando la imagen: {e}")
-        bot.send_message(message.chat.id, "Lo siento, no pude procesar la imagen. ¿Podrías intentarlo de nuevo?")
+        bot.send_message(message.chat.id, "Lo siento, no pude procesar la imagen. Asegúrate de que es un formato común (JPG, PNG) e inténtalo de nuevo.")
 
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -548,7 +559,7 @@ def confirm_request(message):
         bot.send_message(message.chat.id, "Por favor, responde con una de las opciones del teclado.", reply_markup=create_keyboard(["Sí, estoy seguro", "No, déjame revisar"]))
 
 def ask_for_more(chat_id):
-    keyboard = create_keyboard(["Hacer una Petición", "Tengo una Queja/Sugerencia", "No, gracias"])
+    keyboard = create_keyboard(["Buscar Película/Serie", "Hacer una Petición", "Tengo una Queja/Sugerencia", "No, gracias"])
     bot.send_message(chat_id, "¿Puedo ayudarte en algo más?", reply_markup=keyboard)
     USER_STATES[chat_id] = 'WAITING_FOR_MORE'
 
@@ -571,7 +582,6 @@ if __name__ == '__main__':
                 logger.info("Iniciando el bot con funcionalidades mejoradas y bucle guardián...")
                 bot.infinity_polling(skip_pending=True, timeout=40, long_polling_timeout=60)
             except telebot.apihelper.ApiTelegramException as e:
-                # CORRECCIÓN: Manejar el error 409 específicamente
                 if e.error_code == 409:
                     logger.warning("Conflicto detectado (Error 409). Probablemente otra instancia del bot está corriendo.")
                     logger.info("Pausa de 60 segundos para permitir que la otra instancia se detenga antes de reiniciar.")
