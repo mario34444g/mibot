@@ -6,6 +6,7 @@ import logging
 import requests
 import json
 from datetime import datetime
+import base64 # Necesario para procesar imágenes
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -25,29 +26,24 @@ ADMIN_USER_ID = 7753923473
 
 # Configuración de Gemini
 GEMINI_API_KEY = "AIzaSyAK4dCqDDoXXOK4IoTsjtQT76vZ9nXDRf4"
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key={GEMINI_API_KEY}" # Usamos el modelo Vision para imágenes
+GEMINI_TEXT_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}" # Modelo de texto para conversaciones
 
-# --- NUEVO: CONFIGURACIÓN DE BASE DE DATOS LOCAL ---
+# --- CONFIGURACIÓN DE BASE DE DATOS LOCAL ---
 DB_FILE = 'movies_database.json'
 
 bot = telebot.TeleBot(API_KEY)
 USER_STATES = {}
 
-# --- NUEVO: FUNCIONES PARA MANEJAR LA BASE DE DATOS JSON ---
+# --- FUNCIONES PARA MANEJAR LA BASE DE DATOS JSON ---
 def load_database():
-    """Carga la base de datos desde el archivo JSON."""
     try:
         with open(DB_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
-    except FileNotFoundError:
-        logger.warning(f"El archivo {DB_FILE} no fue encontrado. Se creará uno nuevo.")
-        return []
-    except json.JSONDecodeError:
-        logger.error(f"Error al decodificar el archivo JSON {DB_FILE}. Se creará uno nuevo.")
+    except (FileNotFoundError, json.JSONDecodeError):
         return []
 
 def save_database(data):
-    """Guarda los datos en el archivo JSON."""
     try:
         with open(DB_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
@@ -67,12 +63,8 @@ def create_inline_keyboard(buttons):
         keyboard.row(*[InlineKeyboardButton(text, callback_data=data) for text, data in row])
     return keyboard
 
-# --- MODIFICADO: USA LA BASE DE DATOS LOCAL ---
 def save_movie_to_database(title_spanish, title_original, year, media_type, plot, poster_url, message_link):
-    """Guarda una nueva película en el archivo JSON."""
-    logger.info(f"Intentando guardar '{title_spanish}' en la base de datos local.")
     movies_db = load_database()
-    
     new_movie = {
         'title_spanish': title_spanish,
         'title_original': title_original,
@@ -81,107 +73,117 @@ def save_movie_to_database(title_spanish, title_original, year, media_type, plot
         'plot': plot,
         'poster_url': poster_url,
         'message_link': message_link,
-        'created_at': datetime.now().isoformat(), # Guardar fecha como string
+        'created_at': datetime.now().isoformat(),
         'status': 'active'
     }
-    
     movies_db.append(new_movie)
-    
-    if save_database(movies_db):
-        logger.info(f"Película '{title_spanish}' guardada exitosamente en {DB_FILE}.")
-        return True
-    else:
-        logger.error(f"Fallo al guardar la película '{title_spanish}'.")
-        return False
+    return save_database(movies_db)
 
-# --- MODIFICADO: USA LA BASE DE DATOS LOCAL ---
 def search_movie_in_database(query):
-    """Busca en el archivo JSON y devuelve solo resultados únicos."""
-    logger.info(f"Buscando '{query}' en la base de datos local.")
     movies_db = load_database()
     query_lower = query.lower()
-    
     results = []
     found_movies = set()
-
     for movie_data in movies_db:
         title_spanish = movie_data.get('title_spanish', '').lower()
         title_original = movie_data.get('title_original', '').lower()
         year = movie_data.get('year', '')
-
         unique_identifier = (title_spanish, year)
-
         if (query_lower in title_spanish or
             query_lower in title_original or
             any(word in title_spanish for word in query_lower.split()) or
             any(word in title_original for word in query_lower.split())):
-            
             if unique_identifier not in found_movies:
                 results.append(movie_data)
                 found_movies.add(unique_identifier)
-                
-    logger.info(f"Se encontraron {len(results)} resultados únicos para '{query}'.")
     return results
 
-def is_movie_query_with_gemini(text):
-    try:
-        prompt = f"""
-        Analiza el siguiente mensaje de un usuario en un grupo de Telegram.
-        Tu única tarea es determinar si el usuario está preguntando por una película o serie.
-        Responde SOLAMENTE con la palabra 'BUSCAR' si la intención es encontrar o preguntar por la disponibilidad de una película o serie.
-        De lo contrario, responde SOLAMENTE con la palabra 'IGNORAR'.
-        Mensaje del usuario: "{text}"
-        """
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        response = requests.post(GEMINI_URL, json=payload, timeout=10)
-        response.raise_for_status()
-        result = response.json()
-        decision = result['candidates'][0]['content']['parts'][0]['text'].strip().upper()
-        logger.info(f"Decisión de Gemini para '{text}': {decision}")
-        return decision == 'BUSCAR'
-    except Exception as e:
-        logger.error(f"Error en is_movie_query_with_gemini: {e}")
-        return any(keyword in text.lower() for keyword in ['película', 'serie', 'tienen', 'busco', 'está'])
+# --- NUEVA FUNCIÓN DE IA PARA CHAT PRIVADO ---
+def ask_gemini_private_chat(user_message):
+    """
+    Maneja la conversación general en el chat privado, dando consejos
+    y manejando errores de forma contextual.
+    """
+    db_results = search_movie_in_database(user_message)
 
-def ask_gemini(user_question, movie_database=None):
-    try:
-        if movie_database is None:
-            movie_database = search_movie_in_database(user_question)
+    context_prompt = f"""
+    Eres Lucy, la asistente IA del canal de películas y series CINEPELIS 🍿.
+    Estás en una conversación privada con un usuario. Tu personalidad es amigable, servicial y muy cinéfila.
 
-        context_prompt = f"""
-        Eres Lucy, la asistente IA del canal de películas y series CINEPELIS 🍿.
-        Tu trabajo es ayudar a los usuarios a encontrar contenido disponible en nuestro canal.
-        Base de datos del contenido disponible (ya filtrada para no tener duplicados):
-        {json.dumps(movie_database, indent=2, ensure_ascii=False)}
+    TAREA PRINCIPAL: Determina la intención del usuario a partir de su mensaje y actúa según corresponda.
 
-        Pregunta del usuario: {user_question}
+    INTENCIONES POSIBLES:
+    1.  **BÚSQUEDA DE PELÍCULA/SERIE:** Si el mensaje del usuario parece una búsqueda (ej: "tienes la película X?", "busco Y"), usa los resultados de la base de datos.
+        -   Si hay resultados, formatea la respuesta EXACTAMENTE así, usando Markdown:
+            ¡Claro que sí! Encontré esto para ti:
+            - *Título* (Año): [Ver Aquí](message_link)
+            - *Otro Título* (Año): [Ver Aquí](message_link)
+        -   Si no hay resultados, informa amablemente que no lo encontraste y sugiérele hacer una petición oficial.
+    2.  **QUEJA O REPORTE DE ERROR:** Si el usuario menciona un problema, un error, que algo no funciona, o la palabra "copy" (de copyright):
+        -   Responde con empatía.
+        -   Explícale que CINEPELIS es un gran archivo y a veces los enlaces pueden caerse por motivos técnicos o de copyright.
+        -   Sugiérele que haga una petición oficial para que los administradores puedan resubir el contenido.
+        -   Ejemplo de respuesta: "¡Hola! Entiendo tu frustración. A veces los enlaces pueden fallar por problemas técnicos o de copyright (copy). ¡No te preocupes! Lo mejor es que hagas una 'Petición' desde el menú para que los admins lo revisen y lo resuban cuanto antes."
+    3.  **CONSEJO O PREGUNTA GENERAL:** Si el usuario pide un consejo, saluda o hace una pregunta general:
+        -   Responde amablemente.
+        -   Aprovecha para darle este consejo IMPORTANTE: "Por cierto, recuerda que para no perderte ninguna novedad y que todos los enlaces funcionen correctamente, ¡es super importante que te unas a nuestro canal y al grupo de chat! 😉"
+        -   Si te pide una recomendación, puedes sugerirle que explore el canal o que te pregunte por un género específico.
 
-        Instrucciones:
-        1. Tu tono debe ser siempre amigable, servicial y un poco entusiasta. Preséntate siempre como Lucy de CINEPELIS 🍿.
-        2. Analiza la pregunta del usuario y la base de datos.
-        3. SI ENCUENTRAS UNO O MÁS RESULTADOS:
-           - Responde con un mensaje alegre como "¡Claro que sí! Encontré esto para ti:"
-           - Luego, crea una lista con viñetas (usando "-").
-           - CADA elemento de la lista DEBE tener el siguiente formato Markdown EXACTO:
-             - *Título* (Año): [Ver Aquí](message_link)
-           - Ejemplo de lista:
-             - *Bad Boys for Life* (2020): [Ver Aquí](https://t.me/c/...)
-             - *Dos policías rebeldes II* (2003): [Ver Aquí](https://t.me/c/...)
-           - NO incluyas ninguna otra información en la lista, solo los elementos con ese formato.
-        4. SI NO ENCUENTRAS NINGÚN RESULTADO:
-           - Responde amablemente que por el momento NO está disponible.
-           - Sugiere al usuario que puede hacer una petición oficial hablando contigo en privado. Ejemplo: "¡Hola! Soy Lucy 🍿. Busqué '{user_question}' pero no lo encontré en nuestro catálogo por ahora. ¡No te preocupes! Puedes hablar conmigo en privado para hacer una petición oficial."
-        5. Responde siempre de forma clara y concisa.
-        """
-        payload = {"contents": [{"parts": [{"text": context_prompt}]}]}
-        response = requests.post(GEMINI_URL, json=payload, timeout=20)
-        response.raise_for_status()
-        result = response.json()
-        ai_response = result['candidates'][0]['content']['parts'][0]['text']
-        return ai_response
-    except Exception as e:
-        logger.error(f"Error al consultar Gemini: {e}")
-        return "¡Hola! Soy Lucy 🍿. Parece que mi cerebro de IA está un poco sobrecargado ahora mismo. Por favor, intenta tu consulta de nuevo en un momento."
+    Base de datos de películas y series disponibles (para la intención de búsqueda):
+    {json.dumps(db_results, indent=2, ensure_ascii=False)}
+
+    Mensaje del usuario: "{user_message}"
+
+    Ahora, analiza el mensaje y genera la respuesta perfecta.
+    """
+    payload = {"contents": [{"parts": [{"text": context_prompt}]}]}
+    response = requests.post(GEMINI_TEXT_URL, json=payload, timeout=25)
+    response.raise_for_status()
+    result = response.json()
+    return result['candidates'][0]['content']['parts'][0]['text']
+
+# --- NUEVA FUNCIÓN DE IA PARA ANALIZAR IMÁGENES ---
+def ask_gemini_with_image(user_text, image_data_base64):
+    """Analiza una imagen y un texto usando Gemini Vision."""
+    prompt = f"""
+    Eres Lucy, la asistente IA del canal de películas y series CINEPELIS 🍿.
+    Un usuario te ha enviado una imagen. Tu tarea es analizarla y responder de forma útil y cinéfila.
+
+    1.  **Si la imagen es un póster de una película o serie:**
+        -   Identifica el título, el año si es posible, y a los actores principales.
+        -   Busca en tu base de datos (proporcionada abajo) si la tienes disponible.
+        -   Si está, responde: "¡Claro que sí! Reconozco ese póster. Es de [Película] ([Año]). ¡Y la tenemos! Puedes verla aquí: [Enlace]".
+        -   Si no está, responde: "¡Vaya! Reconozco el póster de [Película]. ¡Qué buena pinta! Por ahora no la tenemos, pero puedes hacer una petición oficial desde el menú para que la subamos."
+    2.  **Si la imagen es una escena o un actor:**
+        -   Intenta identificar la película o al actor.
+        -   Haz un comentario ingenioso o un dato curioso sobre ello.
+    3.  **Si la imagen no tiene que ver con cine:**
+        -   Responde de forma amable y redirige la conversación al cine. Ejemplo: "¡Qué foto más chula! Aunque lo mío son las películas. ¿Te puedo ayudar a buscar alguna?"
+    4.  **Si el usuario añade un texto junto a la imagen:**
+        -   Usa ese texto como contexto principal para tu respuesta. Por ejemplo, si pregunta "¿la tienen?", céntrate en buscarla.
+
+    Base de datos para la búsqueda: {json.dumps(load_database(), indent=2, ensure_ascii=False)}
+    Texto del usuario (puede estar vacío): "{user_text}"
+    """
+    
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": image_data_base64
+                    }
+                }
+            ]
+        }]
+    }
+    
+    response = requests.post(GEMINI_URL, json=payload, timeout=30)
+    response.raise_for_status()
+    result = response.json()
+    return result['candidates'][0]['content']['parts'][0]['text']
 
 
 def search_media_tmdb(query):
@@ -248,8 +250,8 @@ def send_welcome(message):
     if message.chat.type != 'private':
         return
     username = message.from_user.first_name
-    welcome_message = f"Hola {username}, soy Lucy 🤖 de CINEPELIS 🍿\n\n¿En qué puedo ayudarte hoy?\n\n🎬 También puedes escribirme directamente el nombre de una película o serie para buscarla."
-    keyboard = create_keyboard(["Hacer una Petición", "Tengo una Queja/Sugerencia", "Buscar Película/Serie"])
+    welcome_message = f"Hola {username}, soy Lucy 🤖 de CINEPELIS 🍿\n\n¿En qué puedo ayudarte hoy?\n\n🎬 También puedes escribirme directamente el nombre de una película o serie para buscarla, ¡o enviarme un póster para que lo analice!"
+    keyboard = create_keyboard(["Hacer una Petición", "Tengo una Queja/Sugerencia"])
     bot.send_message(message.chat.id, welcome_message, reply_markup=keyboard)
     USER_STATES[message.chat.id] = 'WAITING_FOR_OPTION'
 
@@ -326,7 +328,7 @@ def unified_group_handler(message):
                 caption = (f"*{display_title}* ({year})\n\n"
                            f"{plot_es[:200]}...\n\n"
                            f"[VER {media_type} {display_title.upper()} AQUÍ]({message_link})\n\n"
-                           "[CINEPELIS �](https://t.me/pelicuilasymasg)")
+                           "[CINEPELIS 🍿](https://t.me/pelicuilasymasg)")
                 try:
                     if poster_url:
                         logger.info(f"Enviando foto al canal {CHANNEL_ID}")
@@ -351,7 +353,7 @@ def unified_group_handler(message):
         if is_movie_query_with_gemini(message.text):
             try:
                 bot.send_chat_action(message.chat.id, 'typing')
-                ai_response = ask_gemini(message.text)
+                ai_response = ask_gemini_private_chat(message.text)
                 bot.reply_to(message, ai_response, parse_mode='Markdown')
             except Exception as e:
                 logger.error(f"Error al procesar consulta con Gemini en grupo: {e}")
@@ -363,19 +365,54 @@ def unified_group_handler(message):
     logger.info(f"El mensaje en el chat {message.chat.id} no cumple ninguna condición del manejador unificado. Ignorando.")
 
 
-@bot.message_handler(func=lambda message: message.chat.type == 'private' and USER_STATES.get(message.chat.id) == 'WAITING_FOR_OPTION')
-def handle_option(message):
+# --- MODIFICADO: MANEJADOR DE OPCIONES Y CHAT GENERAL ---
+@bot.message_handler(func=lambda message: message.chat.type == 'private' and USER_STATES.get(message.chat.id) == 'WAITING_FOR_OPTION', content_types=['text'])
+def handle_option_and_general_chat(message):
+    """Maneja tanto los botones como la conversación general."""
     if message.text == "Tengo una Queja/Sugerencia":
         bot.send_message(message.chat.id, "Entendido. Por favor, describe tu queja o sugerencia en un solo mensaje. Sé lo más detallado posible.")
         USER_STATES[message.chat.id] = 'WAITING_FOR_COMPLAINT'
     elif message.text == "Hacer una Petición":
         bot.send_message(message.chat.id, "¡Claro! Pero primero, asegúrate de haber buscado bien en el canal. ¿Estás seguro/a de que lo que pides NO está ya disponible?", reply_markup=create_keyboard(["Sí, estoy seguro", "No, déjame revisar"]))
         USER_STATES[message.chat.id] = 'CONFIRMING_REQUEST'
-    elif message.text == "Buscar Película/Serie":
-        bot.send_message(message.chat.id, "🎬 ¡Perfecto! Escribe el nombre de la película o serie que buscas:")
-        USER_STATES[message.chat.id] = 'SEARCHING_MOVIE'
-    else: 
-        handle_movie_search(message)
+    else:
+        # Si no es un botón, es una conversación general
+        try:
+            bot.send_chat_action(message.chat.id, 'typing')
+            ai_response = ask_gemini_private_chat(message.text)
+            bot.send_message(message.chat.id, ai_response, parse_mode='Markdown')
+            # Después de responder, le volvemos a preguntar qué quiere hacer
+            ask_for_more(message.chat.id)
+        except Exception as e:
+            logger.error(f"Error en el chat general con Gemini: {e}")
+            bot.send_message(message.chat.id, "¡Uups! Parece que mis circuitos cinéfilos se cruzaron. Inténtalo de nuevo en un momento.")
+
+
+# --- NUEVO: MANEJADOR PARA IMÁGENES EN CHAT PRIVADO ---
+@bot.message_handler(func=lambda message: message.chat.type == 'private', content_types=['photo'])
+def handle_private_photo(message):
+    try:
+        bot.send_message(message.chat.id, "🤖 Analizando la imagen, un momento por favor...")
+        bot.send_chat_action(message.chat.id, 'typing')
+        
+        # Descargar la imagen
+        file_info = bot.get_file(message.photo[-1].file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        # Codificar en base64
+        image_base64 = base64.b64encode(downloaded_file).decode('utf-8')
+        
+        # Obtener el caption si existe
+        user_caption = message.caption if message.caption else ""
+        
+        # Enviar a Gemini Vision
+        ai_response = ask_gemini_with_image(user_caption, image_base64)
+        bot.send_message(message.chat.id, ai_response, parse_mode='Markdown')
+        ask_for_more(message.chat.id)
+
+    except Exception as e:
+        logger.error(f"Error procesando la imagen: {e}")
+        bot.send_message(message.chat.id, "Lo siento, no pude procesar la imagen. ¿Podrías intentarlo de nuevo?")
 
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -487,20 +524,6 @@ def handle_request(message):
         """
         bot.send_message(message.chat.id, error_message, parse_mode='Markdown')
 
-@bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'SEARCHING_MOVIE')
-def handle_movie_search(message):
-    try:
-        query = message.text
-        bot.send_message(message.chat.id, "🔍 Un momento, estoy buscando en la base de datos de CINEPELIS...")
-        bot.send_chat_action(message.chat.id, 'typing')
-        ai_response = ask_gemini(message.text)
-        bot.send_message(message.chat.id, ai_response, parse_mode='Markdown')
-        ask_for_more(message.chat.id)
-    except Exception as e:
-        logger.error(f"Error en búsqueda privada: {e}")
-        bot.send_message(message.chat.id, "Lo siento, hubo un error al buscar. Intenta de nuevo más tarde.")
-        ask_for_more(message.chat.id)
-
 @bot.message_handler(func=lambda message: USER_STATES.get(message.chat.id) == 'CONFIRMING_REQUEST')
 def confirm_request(message):
     if message.text == "Sí, estoy seguro":
@@ -524,7 +547,7 @@ def confirm_request(message):
         bot.send_message(message.chat.id, "Por favor, responde con una de las opciones del teclado.", reply_markup=create_keyboard(["Sí, estoy seguro", "No, déjame revisar"]))
 
 def ask_for_more(chat_id):
-    keyboard = create_keyboard(["Hacer una Petición", "Tengo una Queja/Sugerencia", "Buscar Película/Serie", "No, gracias"])
+    keyboard = create_keyboard(["Hacer una Petición", "Tengo una Queja/Sugerencia", "No, gracias"])
     bot.send_message(chat_id, "¿Puedo ayudarte en algo más?", reply_markup=keyboard)
     USER_STATES[chat_id] = 'WAITING_FOR_MORE'
 
@@ -535,18 +558,16 @@ def handle_more(message):
         USER_STATES.pop(message.chat.id, None)
     else:
         USER_STATES[message.chat.id] = 'WAITING_FOR_OPTION'
-        handle_option(message)
+        handle_option_and_general_chat(message)
 
 
 if __name__ == '__main__':
     if TMDB_API_KEY == 'TU_API_KEY_DE_TMDB_AQUÍ':
         logger.error("LA CLAVE DE API DE TMDB NO HA SIDO CONFIGURADA. Por favor, edita el script y añade tu clave.")
     else:
-        # Bucle guardián para reiniciar el bot en caso de fallo
         while True:
             try:
                 logger.info("Iniciando el bot con funcionalidades mejoradas y bucle guardián...")
-                # Aumentar el timeout para hacer la conexión más robusta
                 bot.infinity_polling(skip_pending=True, timeout=40, long_polling_timeout=60)
             except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:
                 logger.error(f"Error de red detectado: {e}", exc_info=True)
